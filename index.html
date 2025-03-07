@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Start Controle</title>
+  <script>
+    async function saveData() {
+      var datum = document.getElementById("datum").value;
+      var tijd = document.getElementById("tijd").value;
+      var meting = document.getElementById("meting").value;
+      var bezoekers = document.getElementById("bezoekers").value;
+      
+      if (!datum || !tijd || !meting || !bezoekers) {
+        alert("Vul alle velden in!");
+        return;
+      }
+      
+      var data = [datum, tijd, meting, bezoekers];
+      try {
+        const response = await fetch('/saveMeasurement', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ data }),
+        });
+
+        const result = await response.text();
+        alert(result);
+      } catch (error) {
+        console.error('Error:', error);
+        alert('Fout bij het opslaan van de meting.');
+      }
+      switchPage();
+    }
+
+    function switchPage() {
+    }
+  </script>
+</head>
+<body>
+  <h1>Start Controle</h1>
+  <label>Datum: <input type="date" id="datum"></label><br>
+  <label>Tijd: <input type="time" id="tijd"></label><br>
+  <label>Meting: 
+    <select id="meting">
+      <option value="Ochtend">Ochtend</option>
+      <option value="Avond">Avond</option>
+    </select>
+  </label><br>
+  <label>Bezoekers: <input type="number" id="bezoekers"></label><br>
+  <button onclick="saveData()">Start Meting</button>
+</body>
+</html>
