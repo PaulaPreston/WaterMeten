@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Meting</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: { DEFAULT: '#072B31', light: '#0f3d45' },
+            secondary: { DEFAULT: '#49C5B1', light: '#5fd9c5' },
+            accent: { DEFAULT: '#EFBE7D', dark: '#ECA154' },
+            success: { DEFAULT: '#2A9D8F', light: '#34c5b5' },
+            error: { DEFAULT: '#E76F51', light: '#f4846a' }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body {
+      background: linear-gradient(135deg, #072B31 0%, #49C5B1 100%);
+      min-height: 100vh;
+    }
+
+    .glass-effect {
+      background: rgba(255, 255, 255, 0.9);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+
+    .pool-card {
+      background: white;
+      transition: all 0.3s ease;
+    }
+
+    @keyframes errorShake {
+      0%, 100% { transform: translateX(0); border-color: #E76F51; }
+      25% { transform: translateX(-8px); }
+      75% { transform: translateX(8px); }
+    }
+    
+    .error-input {
+      animation: errorShake 0.5s;
+      border: 2px solid #E76F51 !important;
+      box-shadow: 0 0 8px rgba(231, 111, 81, 0.5);
+    }
+
+    .input-field:focus {
+      box-shadow: 0 0 0 3px rgba(73, 197, 177, 0.2);
+    }
+
+    input::-webkit-outer-spin-button,
+    input::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+
+    input[type="number"] {
+      -moz-appearance: textfield;
+    }
+  </style>
+  <script>
+    let retry = false;
+    let validationErrors = new Map();
+    let currentConfig = null;
+
+    function loadMeasurementConfig() {
+      const measurementId = '<?= measurementId ?>';
+      
+      if (!measurementId) {
+        showError('No measurement ID provided');
+        return;
+      }
+
+      // First, ensure container exists and contains the template
+      const container = document.querySelector('.space-y-6');
+      if (!container) {
+        console.error('Container not found');
+        return;
+      }
+
+      // Show loading state while keeping the template
+      const template = document.getElementById('poolTemplate');
+      container.innerHTML = `
+        <div id="loadingState" class="bg-white rounded-lg p-6 text-center">
+          <p class="text-gray-700">Loading configuration...</p>
+        </div>
+      `;
+
+      // Re-add the template if it was removed
+      if (!document.getElementById('poolTemplate') && template) {
+        container.appendChild(template);
+      }
+
+      google.script.run
+        .withSuccessHandler(function(config) {
+          if (!config || !config.pools) {
+            showError('Invalid configuration received');
+            return;
+          }
+          currentConfig = config;
+          document.title = config.title;
+          document.querySelector('h1').textContent = config.title;
+          initializePools(config);
+          window.pools = config.pools;
+        })
+        .withFailureHandler(function(error) {
+          console.error('Configuration error:', error);
+          showError(error.message || 'Failed to load configuration');
+        })
+        .getMeasurementConfig(measurementId);
+    }
+
+    function initializePools(config) {
+      const container = document.querySelector('.space-y-6');
+      const template = document.getElementById('poolTemplate');
+      
+      if (!template) {
+        showError('Template not found');
+        return;
+      }
+
+      // Clear loading state while keeping the template
+      const loadingState = document.getElementById('loadingState');
+      if (loadingState) {
+        loadingState.remove();
+      }
+      
+      config.pools.forEach(pool => {
+        const poolHtml = template.innerHTML
+          .replace(/{poolId}/g, pool.id)
+          .replace(/{poolName}/g, pool.name)
+          .replace(/{poolType}/g, pool.type);
+        const div = document.createElement('div');
+        div.innerHTML = poolHtml;
+        container.insertBefore(div, template); // Insert before template to keep it
+        
+        const rangeElement = div.querySelector('.temp-range');
+        const range = config.tempRanges[pool.type];
+        rangeElement.textContent = `(${range.min}-${range.max}°C)`;
+      });
+    }
+
+    function showError(message) {
+      const container = document.querySelector('.space-y-6');
+      container.innerHTML = `
+        <div class="bg-white rounded-lg p-6 text-center">
+          <h2 class="text-xl text-error font-bold mb-4">Error</h2>
+          <p class="text-gray-700">${message}</p>
+        </div>
+      `;
+    }
+
+    function validateTemperature(temp, poolType) {
+      const ranges = currentConfig.tempRanges[poolType];
+      return temp >= ranges.min && temp <= ranges.max;
+    }
+
+    function getPoolData(id, type) {
+      // Convert ID format to match the expected format in appendMeasurements2
+      const elementId = id.charAt(0).toLowerCase() + id.slice(1); // e.g., Whirlpool1 -> whirlpool1
+      return {
+        doorzicht: document.getElementById(`doorzicht${id}`).value,
+        temperatuur: parseFloat(document.getElementById(`temperatuur${id}`).value),
+        ph: parseFloat(document.getElementById(`ph${id}`).value),
+        vrijChloor: parseFloat(document.getElementById(`vrijChloor${id}`).value),
+        totaalChloor: parseFloat(document.getElementById(`totaalChloor${id}`).value),
+        type: type
+      };
+    }
+
+    function checkMeasurement() {
+      const measurements = {};
+      let allValid = true;
+      
+      currentConfig.pools.forEach(pool => {
+        const key = pool.id.charAt(0).toLowerCase() + pool.id.slice(1);
+        const data = getPoolData(pool.id, pool.type);
+        measurements[key] = data;
+        
+        // Check validation but don't return early
+        if (!validatePool(data, pool.id)) {
+          allValid = false;
+        }
+      });
+
+      // Only proceed if all validations passed
+      if (allValid) {
+        saveAndProceed(measurements);
+      }
+    }
+
+    function saveAndProceed(measurements) {
+      google.script.run
+        .withSuccessHandler(function(result) {
+          if (result === "Metingen succesvol opgeslagen!") {
+            google.script.run
+              .withSuccessHandler(function(response) {
+                if (response && response.url) {
+                  window.top.location.href = response.url;
+                }
+              })
+              .navigateToPage(currentConfig.nextPage);
+          } else {
+            alert(result);
+          }
+        })[currentConfig.saveFunction](measurements);
+    }
+
+    function validatePool(data, poolId) {
+      if (window.contactConfirmed) return true;
+
+      let isValid = true;
+      let requiresContact = false;
+      
+      const tempValid = validateTemperature(data.temperatuur, data.type);
+      if (!tempValid) {
+        alert(`Temperatuur buiten norm voor ${data.type}! Leidinggevende informeren; Indien afwezig neem contact op met de technische dienst.`);
+        requiresContact = true;
+        isValid = false;
+      }
+      
+      if (data.doorzicht === 'Slecht') {
+        alert("Doorzicht niet goed! Leidinggevende informeren; Indien afwezig neem contact op met de technische dienst.");
+        requiresContact = true;
+        isValid = false;
+      }
+
+      if (requiresContact) {
+        document.getElementById("confirmContact").style.display = "block";
+        highlightInvalidInputs(poolId, data);
+        return false;
+      }
+      
+      const phChlorineInvalid = (
+        data.ph < 7.0 || data.ph > 7.6 || 
+        data.vrijChloor < 0.5 || data.vrijChloor > 1.5 || 
+        data.totaalChloor > data.vrijChloor + 0.6
+      );
+
+      if (phChlorineInvalid) {
+        if (!retry) {
+          alert("Op nieuw bemonsteren vereist. Nieuwe waarde invullen!");
+          retry = true;
+          isValid = false;
+        } else {
+          alert("Waarden nog steeds buiten norm! Leidinggevende informeren; Indien afwezig neem contact op met de technische dienst.");
+          document.getElementById("confirmContact").style.display = "block";
+          isValid = false;
+        }
+      }
+
+      highlightInvalidInputs(poolId, data);
+      return isValid;
+    }
+
+    function confirmContact() {
+      const measurements = {};
+      retry = false;
+      window.contactConfirmed = true;
+      document.getElementById("confirmContact").style.display = "none";
+      currentConfig.pools.forEach(pool => {
+        const key = pool.id.charAt(0).toLowerCase() + pool.id.slice(1);
+        const data = getPoolData(pool.id, pool.type);
+        measurements[key] = data;
+      });
+      saveAndProceed(measurements);
+      alert("Contact bevestigd! U word doorverwezen naar volgende meting.");
+    }
+
+    function validateOnInput(input, poolId) {
+      clearErrors(poolId);
+      input.classList.remove('border-red-500', 'border-[#1ea899]');
+      const value = parseFloat(input.value);
+      let isValid = false;
+
+      switch(input.id.replace(poolId, '')) {
+        case 'temperatuur':
+          const poolType = input.getAttribute('data-pool-type');
+          isValid = validateTemperature(value, poolType);
+          if (!isValid) {
+            addError(poolId, 'temperatuur', `Temperatuur buiten norm voor ${poolType}`);
+          }
+          break;
+        case 'ph':
+          isValid = value >= 7.0 && value <= 7.6;
+          if (!isValid) {
+            addError(poolId, 'ph', 'pH-waarde buiten norm (7.0 - 7.6)');
+          }
+          break;
+        case 'vrijChloor':
+          isValid = value >= 0.5 && value <= 1.5;
+          if (!isValid) {
+            addError(poolId, 'vrijChloor', 'Vrij chloor buiten norm (0.5 - 1.5)');
+          }
+          const totaalInput = document.getElementById(`totaalChloor${poolId}`);
+          if (totaalInput.value) {
+            const totaalValue = parseFloat(totaalInput.value);
+            if (totaalValue > value + 0.6) {
+              addError(poolId, 'totaalChloor', 'Totaal chloor te hoog t.o.v. vrij chloor');
+            }
+            totaalInput.classList.remove('border-red-500', 'border-[#1ea899]');
+            totaalInput.classList.add(totaalValue <= value + 0.6 ? 'border-[#1ea899]' : 'border-red-500');
+          }
+          break;
+        case 'totaalChloor':
+          const vrijChloor = parseFloat(document.getElementById(`vrijChloor${poolId}`).value);
+          isValid = !isNaN(vrijChloor) && value <= vrijChloor + 0.6;
+          if (!isValid) {
+            addError(poolId, 'totaalChloor', 'Totaal chloor te hoog t.o.v. vrij chloor');
+          }
+          break;
+      }
+      
+      input.classList.add(isValid ? 'border-[#1ea899]' : 'border-red-500');
+      validateAllFields();
+    }
+
+    function validateAllFields() {
+      validationErrors.clear();
+      
+      const pools = currentConfig.pools;
+      pools.forEach(pool => {
+        const value = {
+          temperatuur: parseFloat(document.getElementById(`temperatuur${pool.id}`).value),
+          ph: parseFloat(document.getElementById(`ph${pool.id}`).value),
+          vrijChloor: parseFloat(document.getElementById(`vrijChloor${pool.id}`).value),
+          totaalChloor: parseFloat(document.getElementById(`totaalChloor${pool.id}`).value),
+          doorzicht: document.getElementById(`doorzicht${pool.id}`).value,
+          type: pool.type
+        };
+
+        if (!validateTemperature(value.temperatuur, pool.type)) {
+          addError(pool.id, 'temperatuur', `Temperatuur buiten norm voor ${pool.type}`);
+        }
+        if (value.ph < 7.0 || value.ph > 7.6) {
+          addError(pool.id, 'ph', 'pH-waarde buiten norm (7.0 - 7.6)');
+        }
+        if (value.vrijChloor < 0.5 || value.vrijChloor > 1.5) {
+          addError(pool.id, 'vrijChloor', 'Vrij chloor buiten norm (0.5 - 1.5)');
+        }
+        if (value.totaalChloor > value.vrijChloor + 0.6) {
+          addError(pool.id, 'totaalChloor', 'Totaal chloor te hoog t.o.v. vrij chloor');
+        }
+        if (value.doorzicht === 'Slecht') {
+          addError(pool.id, 'doorzicht', 'Doorzicht niet goed');
+        }
+      });
+
+      updateErrorCounter();
+    }
+    function setDoorzicht(poolId, value) {
+      const buttons = document.querySelectorAll(`[onclick*="${poolId}"]`);
+      buttons.forEach(btn => {
+        btn.classList.remove('bg-success', 'bg-error', 'text-white');
+      });
+      const button = event.target;
+      button.classList.add(value === 'Goed' ? 'bg-success' : 'bg-error', 'text-white');
+      document.getElementById(`doorzicht${poolId}`).value = value;
+      
+      // Clear all errors for this pool first
+      clearErrors(poolId);
+      
+      // Only add error if Slecht
+      if (value === 'Slecht') {
+        addError(poolId, 'doorzicht', 'Doorzicht niet goed');
+      }
+      
+      validateAllFields();
+    }
+    function updateErrorCounter() {
+      const counter = document.getElementById('errorCounter');
+      let emptyFieldsCount = 0;
+      
+      currentConfig.pools.forEach(pool => {
+        ['temperatuur', 'ph', 'vrijChloor', 'totaalChloor', 'doorzicht'].forEach(field => {
+          const value = document.getElementById(`${field}${pool.id}`).value;
+          if (field === 'doorzicht' && value === '') {
+            emptyFieldsCount++;
+          } else if ((value === '' || isNaN(parseFloat(value)) && field !== 'doorzicht')) {
+            emptyFieldsCount++;
+          }
+        });
+      });
+
+      if (emptyFieldsCount > 0) {
+        counter.textContent = `Vul alle velden in (${emptyFieldsCount} leeg)`;
+        counter.classList.remove('bg-[#1ea899]');
+        counter.classList.add('bg-red-500');
+      } else {
+        const totalErrors = Array.from(validationErrors.values())
+          .reduce((sum, errors) => sum + errors.length, 0);
+        
+        if (totalErrors > 0) {
+          counter.textContent = `${totalErrors} waarde${totalErrors === 1 ? '' : 'n'} buiten norm`;
+          counter.classList.remove('bg-[#1ea899]');
+          counter.classList.add('bg-red-500');
+        } else {
+          counter.textContent = 'Alle waarden correct';
+          counter.classList.remove('bg-red-500');
+          counter.classList.add('bg-[#1ea899]');
+        }
+      }
+      counter.style.display = 'block';
+    }
+
+    function addError(poolId, field, message) {
+      if (!validationErrors.has(poolId)) {
+        validationErrors.set(poolId, []);
+      }
+      validationErrors.get(poolId).push({ field, message });
+    }
+
+    function clearErrors(poolId) {
+      validationErrors.set(poolId, []);
+    }
+
+    function highlightInvalidInputs(poolId, data) {
+      const inputs = ['doorzicht', 'temperatuur', 'ph', 'vrijChloor', 'totaalChloor'];
+      inputs.forEach(input => {
+        const element = document.getElementById(`${input}${poolId}`);
+        if (!element) return;
+        
+        element.classList.remove('error-input', 'border-red-500', 'border-[#1ea899]');
+        
+        let isValid = true;
+        switch(input) {
+          case 'temperatuur':
+            isValid = validateTemperature(data[input], data.type);
+            break;
+          case 'ph':
+            isValid = data[input] >= 7.0 && data[input] <= 7.6;
+            break;
+          case 'vrijChloor':
+            isValid = data[input] >= 0.5 && data[input] <= 1.5;
+            break;
+          case 'totaalChloor':
+            isValid = data[input] <= data.vrijChloor + 0.6;
+            break;
+          case 'doorzicht':
+            isValid = data[input] === 'Goed';
+            break;
+        }
+        
+        if (!isValid) {
+          element.classList.add('error-input');
+        }
+      });
+    }
+
+    window.onload = loadMeasurementConfig;
+  </script>
+</head>
+<body class="min-h-screen">
+  <div class="sticky top-0 glass-effect shadow-lg z-50 p-3">
+    <div class="max-w-3xl mx-auto">
+      <div class="flex items-center justify-between">
+        <h1 class="text-3xl font-bold text-primary">Meting</h1>
+        <div class="flex justify-center">
+          <div id="errorCounter" 
+               class="hidden px-6 py-2 rounded-full text-white font-bold">
+            Alle waarden correct
+          </div>
+        </div>
+        <div class="text-accent-dark font-medium">
+          Zwembad Metingen
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="max-w-3xl mx-auto p-4 pt-8">
+    <div class="space-y-6">
+        <template id="poolTemplate">
+            <div class="pool-card rounded-xl shadow-md p-6">
+              <div class="sticky top-16 bg-white py-2 -mx-6 px-6 border-b border-secondary/20 flex items-center justify-between z-10">
+                <h2 class="text-2xl font-semibold text-primary">{poolName}</h2>
+                <div class="text-secondary text-sm font-medium">{poolType}</div>
+              </div>
+              
+              <div class="mt-6 space-y-6">
+                <!-- Doorzicht with colored buttons -->
+                <div class="flex flex-col">
+                  <label class="text-xl text-primary mb-2">Doorzicht:</label>
+                  <div class="grid grid-cols-2 gap-4">
+                    <button onclick="setDoorzicht('{poolId}', 'Goed')" 
+                            class="doorzicht-btn h-16 text-lg rounded-lg border-2 border-success hover:bg-success hover:text-white transition-all duration-300">
+                      Goed
+                    </button>
+                    <button onclick="setDoorzicht('{poolId}', 'Slecht')" 
+                            class="doorzicht-btn h-16 text-lg rounded-lg border-2 border-error hover:bg-error hover:text-white transition-all duration-300">
+                      Slecht
+                    </button>
+                  </div>
+                  <input type="hidden" id="doorzicht{poolId}">
+                </div>
+    
+                <!-- Update other input fields with new styling -->
+                <div class="flex flex-col">
+                  <label class="text-xl text-primary mb-2">
+                    Temperatuur:
+                    <span class="text-sm text-gray-700 temp-range" data-type="{poolType}"></span>
+                  </label>
+                  <div class="relative">
+                    <input type="number" 
+                           step="0.1" 
+                           id="temperatuur{poolId}"
+                           data-pool-type="{poolType}" 
+                           class="h-16 text-2xl text-center rounded-lg border-2 focus:outline-none w-full"
+                           oninput="validateOnInput(this, '{poolId}')">
+                    <div class="absolute right-4 top-1/2 -translate-y-1/2 text-secondary">°C</div>
+                  </div>
+                </div>
+    
+                <div class="grid grid-cols-1 gap-6">
+                  <div class="flex flex-col">
+                    <label class="text-xl text-gray-700 mb-2">
+                      pH-waarde:
+                      <span class="text-sm text-gray-600">(7.0 - 7.6)</span>
+                    </label>
+                    <input type="number" 
+                           step="0.1" 
+                           id="ph{poolId}" 
+                           class="h-16 text-2xl text-center rounded-lg border-2 focus:outline-none"
+                           oninput="validateOnInput(this, '{poolId}')">
+                  </div>
+                  
+                  <div class="flex flex-col">
+                    <label class="text-xl text-gray-700 mb-2">
+                      Vrij Chloor:
+                      <span class="text-sm text-gray-600">(0.5 - 1.5)</span>
+                    </label>
+                    <input type="number" 
+                           step="0.1" 
+                           id="vrijChloor{poolId}" 
+                           class="h-16 text-2xl text-center rounded-lg border-2 focus:outline-none"
+                           oninput="validateOnInput(this, '{poolId}')">
+                  </div>
+                  
+                  <div class="flex flex-col">
+                    <label class="text-xl text-gray-700 mb-2">
+                      Totaal Chloor:
+                      <span class="text-sm text-gray-600">(max vrij chloor + 0.6)</span>
+                    </label>
+                    <input type="number" 
+                           step="0.1" 
+                           id="totaalChloor{poolId}" 
+                           class="h-16 text-2xl text-center rounded-lg border-2 focus:outline-none"
+                           oninput="validateOnInput(this, '{poolId}')">
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
+    </div>
+
+    <!-- Sticky footer -->
+    <div class="bottom-4 left-0 right-0 glass-effect shadow-lg mt-8 rounded-xl overflow-hidden">
+      <div class="max-w-3xl mx-auto flex gap-4 p-4">
+        <button onclick="checkMeasurement()" 
+                class="flex-1 bg-gradient-to-r from-primary to-primary-light text-white font-semibold py-5 text-xl rounded-lg transition-all duration-300 hover:shadow-lg hover:scale-[1.02] active:scale-[0.98]">
+          Controleer Waarden
+        </button>
+        <button id="confirmContact" 
+                style="display:none;" 
+                onclick="confirmContact()" 
+                class="flex-1 bg-gradient-to-r from-error to-error-light text-white font-semibold py-5 text-xl rounded-lg transition-all duration-300 hover:shadow-lg hover:scale-[1.02] active:scale-[0.98] animate-pulse">
+          Bevestig Contact
+        </button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
